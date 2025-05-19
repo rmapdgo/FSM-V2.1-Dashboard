@@ -1,0 +1,6 @@
+services:
+  newconcentrations:
+    image: newconcentrations
+    build:
+      context: .
+      dockerfile: ./Dockerfile
