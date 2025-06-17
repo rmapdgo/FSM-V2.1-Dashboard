@@ -1,5 +1,6 @@
 import dash
-from dash import Dash, dcc, html, Input, Output, State, callback
+from dash import Dash, dcc, html, Input, Output, State, callback, ctx
+import boto3
 import base64
 import io
 import openpyxl
@@ -30,35 +31,195 @@ from dash import html, callback_context
 import base64
 from dash.exceptions import PreventUpdate
 import xlsxwriter
+from openpyxl.utils.dataframe import dataframe_to_rows
+from dash import no_update
+
 
 # Create the Dash app
 app = dash.Dash(__name__, suppress_callback_exceptions=True)
 server = app.server
 
+# AWS S3 client setup
+s3 = boto3.client('s3',
+    aws_access_key_id='AKIAT64DSU55EBYQBKGM',
+    aws_secret_access_key='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'
+)
+
+# Bucket mapping
+bucket_map = {
+    'upload-raw': 'fsm-v2.1-raw-intensity-data',
+    'upload-concentration': 'fsm-v2.1-concentrations-data',
+    'upload-ctg': 'fsm-v2.1-ctg-data'
+}
+
+# Upload modal component
+def get_upload_modal():
+    return html.Div(
+        id='upload-modal',
+        style={
+            'display': 'none',
+            'position': 'fixed',
+            'top': '0',
+            'left': '0',
+            'width': '100%',
+            'height': '100%',
+            'backgroundColor': 'rgba(0, 0, 0, 0.6)',
+            'zIndex': '1000',
+            'display': 'flex',
+            'justifyContent': 'center',
+            'alignItems': 'center',
+            'backdropFilter': 'blur(4px)'
+        },
+        children=html.Div(
+            style={
+                'background': 'linear-gradient(135deg, #ffffff 0%, #f0f4ff 100%)',
+                'padding': '40px 50px',
+                'borderRadius': '20px',
+                'width': '520px',
+                'boxShadow': '0 12px 30px rgba(0, 0, 0, 0.25)',
+                'textAlign': 'left',
+                'fontFamily': "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif",
+                'color': '#333',
+                'position': 'relative'
+            },
+            children=[
+                html.H2("Upload data to cloud", style={
+                    'marginBottom': '30px',
+                    'fontWeight': '700',
+                    'fontSize': '2rem',
+                    'textAlign': 'center'
+                }),
+
+                html.Div([
+                    html.H4("Raw intensity data", style={'marginBottom': '8px', 'fontWeight': '600'}),
+                    dcc.Upload(
+                        id='upload-raw',
+                        children=html.Div(["Drag and drop or click to select files"]),
+                        style={
+                            'padding': '20px',
+                            'border': '2px dashed #007BFF',
+                            'borderRadius': '12px',
+                            'marginBottom': '10px',
+                            'cursor': 'pointer',
+                            'fontSize': '1rem',
+                            'color': '#007BFF',
+                            'backgroundColor': '#f9faff',
+                            'textAlign': 'center',
+                        },
+                        multiple=False
+                    ),
+                    html.Div(id='filename-raw', style={'marginBottom': '20px', 'color': '#007BFF'})
+                ]),
+
+                html.Div([
+                    html.H4("Concentrations data", style={'marginBottom': '8px', 'fontWeight': '600'}),
+                    dcc.Upload(
+                        id='upload-concentration',
+                        children=html.Div(["Drag and drop or click to select files"]),
+                        style={
+                            'padding': '20px',
+                            'border': '2px dashed #28a745',
+                            'borderRadius': '12px',
+                            'marginBottom': '10px',
+                            'cursor': 'pointer',
+                            'fontSize': '1rem',
+                            'color': '#28a745',
+                            'backgroundColor': '#f4fff7',
+                            'textAlign': 'center',
+                        },
+                        multiple=False
+                    ),
+                    html.Div(id='filename-concentration', style={'marginBottom': '20px', 'color': '#28a745'})
+                ]),
+
+                html.Div([
+                    html.H4("CTG data", style={'marginBottom': '8px', 'fontWeight': '600'}),
+                    dcc.Upload(
+                        id='upload-ctg',
+                        children=html.Div(["Drag and drop or click to select files"]),
+                        style={
+                            'padding': '20px',
+                            'border': '2px dashed #fd7e14',
+                            'borderRadius': '12px',
+                            'marginBottom': '10px',
+                            'cursor': 'pointer',
+                            'fontSize': '1rem',
+                            'color': '#fd7e14',
+                            'backgroundColor': '#fff8f1',
+                            'textAlign': 'center',
+                        },
+                        multiple=False
+                    ),
+                    html.Div(id='filename-ctg', style={'marginBottom': '30px', 'color': '#fd7e14'})
+                ]),
+
+                html.Div(
+                    style={'display': 'flex', 'justifyContent': 'center', 'gap': '20px'},
+                    children=[
+                        html.Button('Submit', id='submit-modal', n_clicks=0, style={
+                            'padding': '12px 32px',
+                            'fontSize': '1rem',
+                            'borderRadius': '30px',
+                            'border': 'none',
+                            'backgroundColor': '#28a745',
+                            'color': 'white',
+                            'cursor': 'pointer',
+                            'fontWeight': '600',
+                        }),
+                        html.Button('Close', id='close-modal', n_clicks=0, style={
+                            'padding': '12px 32px',
+                            'fontSize': '1rem',
+                            'borderRadius': '30px',
+                            'border': 'none',
+                            'backgroundColor': '#dc3545',
+                            'color': 'white',
+                            'cursor': 'pointer',
+                            'fontWeight': '600',
+                        })
+                    ]
+                ),
+
+                html.Div(id='upload-alerts', style={'marginTop': '20px'})
+            ]
+        )
+    )
+
+
+# Layout
 app.layout = html.Div([
-    # Header Section
     html.Div(
         style={
-            'height': '40px',
-            'padding': '15px',
-            'background': '#ed6a28',
+            'height': '70px',
+            'padding': '0 15px',
+            'background': '#003f5c',
             'color': 'white',
             'display': 'flex',
             'alignItems': 'center',
-            'justifyContent': 'center',
+            'justifyContent': 'space-between',
             'fontSize': '30px',
             'fontWeight': '100',
             'boxShadow': '0 4px 8px rgba(0, 0, 0, 0.2)',
             'borderBottom': '5px solid #ed6a28'
         },
         children=[
-            html.H1(
-                'FetalsenseM V2 Dashboard',
-                style={'margin': '0', 'margin-left': '10px'}
+            html.H1('FetalsenseM V2.1 Dashboard', style={'margin': '0'}),
+            html.Button(
+                'Upload to cloud', id='upload-cloud-button', n_clicks=0,
+                style={
+                    'height': '40px',
+                    'borderWidth': '1px',
+                    'borderStyle': 'dashed',
+                    'borderRadius': '5px',
+                    'textAlign': 'center',
+                    'fontSize': '18px',
+                    'marginRight': '0px',
+                    'padding': '0 15px',
+                    'cursor': 'pointer'
+                }
             ),
-            html.A(html.Button('Refresh Data'),href='/', style={'margin-left': '1500px'}),
-        ],
+        ]
     ),
+    get_upload_modal(),  # Add modal to layout
     html.Br(),
     # Flex container for the left and right sections
     html.Div([
@@ -71,7 +232,7 @@ app.layout = html.Div([
                     html.Div([
                         html.Div([
                             html.H3('File Upload', style={
-                                'background': '#ed6a28',
+                                'background': '#003f5c',
                                 'padding': '15px',
                                 'textAlign': 'center',
                                 'color': 'white',
@@ -92,7 +253,7 @@ app.layout = html.Div([
                         html.Br(),
                         html.Div([
                             html.H3('Download SNIRF', style={
-                                'background': '#ed6a28',
+                                'background': '#003f5c',
                                 'padding': '15px',
                                 'textAlign': 'center',
                                 'color': 'white',
@@ -134,7 +295,7 @@ app.layout = html.Div([
                         html.Br(),
                         html.Div([
                             html.H3('View Intensities', style={
-                                'background': '#ed6a28',
+                                'background': '#003f5c',
                                 'padding': '15px',
                                 'textAlign': 'center',
                                 'color': 'white',
@@ -146,7 +307,7 @@ app.layout = html.Div([
                                     'textAlign': 'left',
                                     'fontSize': '30px',
                                     'marginBottom': '15px',
-                                    'color': '#ed6a28',
+                                    'color': '#003f5c',
                                     "font-weight": "100"
                                 }),
                                 dcc.Dropdown(
@@ -169,7 +330,7 @@ app.layout = html.Div([
                                     ]],
                                     multi=True,
                                     value=[],
-                                    style={'borderColor': '#ed6a28', 'fontSize': '24px'}
+                                    style={'borderColor': '#003f5c', 'fontSize': '24px'}
                                 )
                             ]),
                             html.Div(id='intensity-selection-status', children='Select to view', style={
@@ -185,7 +346,7 @@ app.layout = html.Div([
         'textAlign': 'left',
         'fontSize': '30px',
         'marginBottom': '15px',
-        'color': '#ed6a28',
+        'color': '#003f5c',
         "font-weight": "100"
     }),
     # Group A and Group B selectors placed side by side using flexbox
@@ -271,7 +432,7 @@ app.layout = html.Div([
                             html.Br(),
 html.Div(children=[
     html.H3('Raw Data Quality Check', style={
-        'background': '#ed6a28',
+        'background': '#003f5c',
         'padding': '15px',
         'textAlign': 'center',
         'color': 'white',
@@ -281,7 +442,7 @@ html.Div(children=[
     # Alert and button styles updated for clearer and larger font
     dbc.Alert(
         html.Div([
-            html.H4('Signal Noise Ratio', style={'color': '#ed6a28', 'marginLeft': '40px', 'textAlign': 'left', 'fontSize': '28px', 'fontWeight': 'lighter'}),
+            html.H4('Signal Noise Ratio', style={'color': '#003f5c', 'marginLeft': '40px', 'textAlign': 'left', 'fontSize': '28px', 'fontWeight': 'lighter'}),
             html.Button('×', id='snr-close-btn', n_clicks=0, style={'background': 'none', 'border': 'none', 'color': 'black', 'fontSize': '28px', 'cursor': 'pointer', 'float': 'right', 'color': '#ed6a28'})
         ]),
         id='snr-alert',  # Unique ID
@@ -291,7 +452,7 @@ html.Div(children=[
     ),
     dbc.Alert(
         html.Div([
-            html.H4('Average Signal Noise Ratio', style={'color': '#ed6a28', 'marginLeft': '40px', 'textAlign': 'left', 'fontSize': '28px', 'fontWeight': 'lighter'}),
+            html.H4('Average Signal Noise Ratio', style={'color': '#003f5c', 'marginLeft': '40px', 'textAlign': 'left', 'fontSize': '28px', 'fontWeight': 'lighter'}),
             html.Button('×', id='avg-snr-close-btn', n_clicks=0, style={'background': 'none', 'border': 'none', 'color': 'black', 'fontSize': '28px', 'cursor': 'pointer', 'float': 'right', 'color': '#ed6a28'})
         ]),
         id='avg-snr-alert',  # Unique ID
@@ -301,7 +462,7 @@ html.Div(children=[
     ),
     dbc.Alert(
         html.Div([
-            html.H4('Noise Equivalent Power', style={'color': '#ed6a28', 'marginLeft': '40px', 'textAlign': 'left', 'fontSize': '28px', 'fontWeight': 'lighter'}),
+            html.H4('Noise Equivalent Power', style={'color': '#003f5c', 'marginLeft': '40px', 'textAlign': 'left', 'fontSize': '28px', 'fontWeight': 'lighter'}),
             html.Button('×', id='nep-close-btn', n_clicks=0, style={'background': 'none', 'border': 'none', 'color': 'black', 'fontSize': '28px', 'cursor': 'pointer', 'float': 'right', 'color': '#ed6a28'})
         ]),
         id='nep-alert',  # Unique ID
@@ -311,7 +472,7 @@ html.Div(children=[
     ),
     dbc.Alert(
         html.Div([
-            html.H4('Scatter Plot', style={'color': '#ed6a28', 'marginLeft': '40px', 'textAlign': 'left', 'fontSize': '28px', 'fontWeight': 'lighter'}),
+            html.H4('Scatter Plot', style={'color': '#003f5c', 'marginLeft': '40px', 'textAlign': 'left', 'fontSize': '28px', 'fontWeight': 'lighter'}),
             html.Button('×', id='scatter-plot-btn', n_clicks=0, style={'background': 'none', 'border': 'none', 'color': 'black', 'fontSize': '28px', 'cursor': 'pointer', 'float': 'right', 'color': '#ed6a28'})
         ]),
         id='scatter-plot-alert',  # Unique ID
@@ -321,7 +482,7 @@ html.Div(children=[
     ),
     dbc.Alert(
         html.Div([
-            html.H4('Distance from Dark', style={'color': '#ed6a28', 'marginLeft': '40px', 'textAlign': 'left', 'fontSize': '28px', 'fontWeight': 'lighter'}),
+            html.H4('Distance from Dark', style={'color': '#003f5c', 'marginLeft': '40px', 'textAlign': 'left', 'fontSize': '28px', 'fontWeight': 'lighter'}),
             html.Button('×', id='distance-from-dark-btn', n_clicks=0, style={'background': 'none', 'border': 'none', 'color': 'black', 'fontSize': '28px', 'cursor': 'pointer', 'float': 'right', 'color': '#ed6a28'})
         ]),
         id='distance-from-dark-alert',  # Unique ID
@@ -335,7 +496,7 @@ html.Div(children=[
                                     'textAlign': 'left',
                                     'fontSize': '30px',
                                     'marginBottom': '15px',
-                                    'color': '#ed6a28',
+                                    'color': '#003f5c',
                                     "font-weight": "100"
                                 }),
                                 dcc.Dropdown(
@@ -358,7 +519,7 @@ html.Div(children=[
                                     ]],
                                     multi=False,
                                     value=[],
-                                    style={'borderColor': '#ed6a28', 'fontSize': '24px'}
+                                    style={'borderColor': '#003f5c', 'fontSize': '24px'}
                                 )
                             ]),
     dbc.Button('Check Raw Data Quality', id='check-data-quality-btn', color='primary', style={
@@ -379,7 +540,7 @@ html.Div(children=[
                 dcc.Tab(label='Data Clean', children=[
                     html.Div([
                         html.H3('Data Cleaning', style={
-                            'background': '#ed6a28',
+                            'background': '#003f5c',
                             'padding': '12px',
                             'textAlign': 'center',
                             'color': '#ECF0F1',
@@ -494,7 +655,7 @@ html.Div(
                 'fontSize': '16px',
                 'textAlign': 'center',
                 'marginTop': '10px',
-                'color': '#2B2D42'
+                'color': '#003f5c',
             }
         ),
         html.Br(),
@@ -540,7 +701,7 @@ html.Div(
                 'fontSize': '16px',
                 'textAlign': 'center',
                 'marginTop': '10px',
-                'color': '#2B2D42'
+                'color': '#003f5c',
             }
         ),
         html.Br(),
@@ -587,7 +748,7 @@ html.Div(
                 'fontSize': '16px',
                 'textAlign': 'center',
                 'marginTop': '10px',
-                'color': '#2B2D42'
+                'color': '#003f5c',
             }
         ),
         html.Br(),
@@ -669,7 +830,7 @@ html.Div(
                 'fontSize': '16px',
                 'textAlign': 'center',
                 'marginTop': '10px',
-                'color': '#2B2D42'
+                'color': '#003f5c',
             }
         ),
         html.Br(),
@@ -715,7 +876,7 @@ html.Div(
                 'fontSize': '16px',
                 'textAlign': 'center',
                 'marginTop': '10px',
-                'color': '#2B2D42'
+                'color': '#003f5c',
             }
         ),
         html.Br(),
@@ -762,7 +923,7 @@ html.Div(
                 'fontSize': '16px',
                 'textAlign': 'center',
                 'marginTop': '10px',
-                'color': '#2B2D42'
+                'color':  '#003f5c',
             }
         ),
         html.Br(),
@@ -792,7 +953,7 @@ html.Div(
                 'textAlign': 'Center',
                 'fontSize': '28px',
                 'marginBottom': '10px',
-                'color': '#003f5c',
+                'color':  '#003f5c',
                 "font-weight": "100",
                 'alignItems': 'center'
             },
@@ -813,7 +974,7 @@ html.Div(
                         'textAlign': 'left',
                         'fontSize': '26px',
                         'marginBottom': '10px',
-                        'color': '#003f5c',
+                        'color':  '#003f5c',
                         "font-weight": "100",
                         'marginLeft': '30px'
                     }
@@ -844,7 +1005,7 @@ html.Div(
                 'fontSize': '16px',
                 'textAlign': 'center',
                 'marginTop': '10px',
-                'color': '#2B2D42'
+                'color': '#003f5c',
             }
         ),
         html.Br(),
@@ -890,7 +1051,7 @@ html.Div(
                 'fontSize': '16px',
                 'textAlign': 'center',
                 'marginTop': '10px',
-                'color': '#2B2D42'
+                'color': '#003f5c',
             }
         ),
         html.Br(),
@@ -1199,7 +1360,7 @@ html.Br(),
                 dcc.Tab(label='Data Analysis', children=[
                     html.Div([
                         html.H3('Data Analysis', style={
-                            'background': '#ed6a28',
+                            'background': '#003f5c',
                             'padding': '12px',
                             'textAlign': 'center',
                             'color': '#ECF0F1',
@@ -1207,13 +1368,296 @@ html.Br(),
                             'fontSize': '38px',
                             'borderRadius': '8px',
                         }),
-                        html.P("This tab will contain data analysis functionalities."),
+                        html.Br(),
+                                                dbc.Alert(
+                                                    html.Div([
+                                                        html.H4('Histogram',
+                                                                style={'color': '#003f5c', 'marginLeft': '40px',
+                                                                       'textAlign': 'left', 'fontSize': '24px',
+                                                                       'fontWeight': 'lighter',
+                                                                       'display': 'inline-block', 'width': '45%'}),
+                                                        html.Button(
+                                                            '×', id='close-histogram-alert', n_clicks=0,
+                                                            style={
+                                                                'background': 'none',
+                                                                'border': 'none',
+                                                                'color': 'black',
+                                                                'fontSize': '28px',
+                                                                'cursor': 'pointer',
+                                                                'float': 'right',
+                                                                'marginTop': '-10px',
+                                                                'color': '#003f5c'
+                                                            }
+                                                        )
+                                                    ]),
+                                                    id='histogram-alert',
+                                                    is_open=True,
+                                                    dismissable=False,
+                                                    style={'marginTop': '10px',
+                                                           'boxShadow': '0 4px 6px rgba(0, 0, 0, 0.1)'}
+                                                ),
+                                                dbc.Alert(
+                                                    html.Div([
+                                                        html.H4('Standard Deviation',
+                                                                style={'color': '#003f5c', 'marginLeft': '40px',
+                                                                       'textAlign': 'left', 'fontSize': '24px',
+                                                                       'fontWeight': 'lighter',
+                                                                       'display': 'inline-block', 'width': '45%'}),
+                                                        html.Button(
+                                                            '×', id='close-standard-deviation-alert', n_clicks=0,
+                                                            style={
+                                                                'background': 'none',
+                                                                'border': 'none',
+                                                                'color': 'black',
+                                                                'fontSize': '28px',
+                                                                'cursor': 'pointer',
+                                                                'float': 'right',
+                                                                'marginTop': '-10px',
+                                                                'color': '#003f5c'
+                                                            }
+                                                        )
+                                                    ]),
+                                                    id='standard-deviation-alert',
+                                                    is_open=True,
+                                                    dismissable=False,
+                                                    style={'marginTop': '10px',
+                                                           'boxShadow': '0 4px 6px rgba(0, 0, 0, 0.1)'}
+                                                ),
+                                                dbc.Alert(
+                                                    html.Div([
+                                                        html.H4('Mean', style={'color': '#003f5c', 'marginLeft': '40px',
+                                                                               'textAlign': 'left', 'fontSize': '24px',
+                                                                               'fontWeight': 'lighter',
+                                                                               'display': 'inline-block',
+                                                                               'width': '45%'}),
+                                                        html.Button(
+                                                            '×', id='close-mean-alert', n_clicks=0,
+                                                            style={
+                                                                'background': 'none',
+                                                                'border': 'none',
+                                                                'color': 'black',
+                                                                'fontSize': '28px',
+                                                                'cursor': 'pointer',
+                                                                'float': 'right',
+                                                                'marginTop': '-10px',
+                                                                'color': '#003f5c'
+                                                            }
+                                                        )
+                                                    ]),
+                                                    id='mean-alert',
+                                                    is_open=True,
+                                                    dismissable=False,
+                                                    style={'marginTop': '10px',
+                                                           'boxShadow': '0 4px 6px rgba(0, 0, 0, 0.1)'}
+                                                ),
+                                                dbc.Alert(
+                                                    html.Div([
+                                                        html.H4('Maximum',
+                                                                style={'color': '#003f5c', 'marginLeft': '40px',
+                                                                       'textAlign': 'left', 'fontSize': '24px',
+                                                                       'fontWeight': 'lighter',
+                                                                       'display': 'inline-block', 'width': '45%'}),
+                                                        html.Button(
+                                                            '×', id='close-maximum-alert', n_clicks=0,
+                                                            style={
+                                                                'background': 'none',
+                                                                'border': 'none',
+                                                                'color': 'black',
+                                                                'fontSize': '28px',
+                                                                'cursor': 'pointer',
+                                                                'float': 'right',
+                                                                'marginTop': '-10px',
+                                                                'color': '#003f5c'
+                                                            }
+                                                        )
+                                                    ]),
+                                                    id='maximum-alert',
+                                                    is_open=True,
+                                                    dismissable=False,
+                                                    style={'marginTop': '10px',
+                                                           'boxShadow': '0 4px 6px rgba(0, 0, 0, 0.1)'}
+                                                ),
+                                                dbc.Alert(
+                                                    html.Div([
+                                                        html.H4('Minimum',
+                                                                style={'color': '#003f5c', 'marginLeft': '40px',
+                                                                       'textAlign': 'left', 'fontSize': '24px',
+                                                                       'fontWeight': 'lighter',
+                                                                       'display': 'inline-block', 'width': '45%'}),
+                                                        html.Button(
+                                                            '×', id='close-minimum-alert', n_clicks=0,
+                                                            style={
+                                                                'background': 'none',
+                                                                'border': 'none',
+                                                                'color': 'black',
+                                                                'fontSize': '28px',
+                                                                'cursor': 'pointer',
+                                                                'float': 'right',
+                                                                'marginTop': '-10px',
+                                                                'color': '#003f5c'
+                                                            }
+                                                        )
+                                                    ]),
+                                                    id='minimum-alert',
+                                                    is_open=True,
+                                                    dismissable=False,
+                                                    style={'marginTop': '10px',
+                                                           'boxShadow': '0 4px 6px rgba(0, 0, 0, 0.1)'}
+                                                ),
+                                                dbc.Alert(
+                                                    html.Div([
+                                                        html.H4('Largest Variations',
+                                                                style={'color': '#003f5c', 'marginLeft': '40px',
+                                                                       'textAlign': 'left', 'fontSize': '24px',
+                                                                       'fontWeight': 'lighter',
+                                                                       'display': 'inline-block', 'width': '45%'}),
+                                                        html.Button(
+                                                            '×', id='close-variations-alert', n_clicks=0,
+                                                            style={
+                                                                'background': 'none',
+                                                                'border': 'none',
+                                                                'color': 'black',
+                                                                'fontSize': '28px',
+                                                                'cursor': 'pointer',
+                                                                'float': 'right',
+                                                                'marginTop': '-10px',
+                                                                'color': '#003f5c'
+                                                            }
+                                                        )
+                                                    ]),
+                                                    id='variations-alert',
+                                                    is_open=True,
+                                                    dismissable=False,
+                                                    style={'marginTop': '10px',
+                                                           'boxShadow': '0 4px 6px rgba(0, 0, 0, 0.1)'}
+                                                ),
+                                                dbc.Alert(
+                                                    html.Div([
+                                                        html.H4('Scatter Effect',
+                                                                style={'color': '#003f5c', 'marginLeft': '40px',
+                                                                       'textAlign': 'left', 'fontSize': '24px',
+                                                                       'fontWeight': 'lighter',
+                                                                       'display': 'inline-block', 'width': '45%'}),
+                                                        html.Button(
+                                                            '×', id='close-scatter-effect-alert', n_clicks=0,
+                                                            style={
+                                                                'background': 'none',
+                                                                'border': 'none',
+                                                                'color': 'black',
+                                                                'fontSize': '28px',
+                                                                'cursor': 'pointer',
+                                                                'float': 'right',
+                                                                'marginTop': '-10px'
+                                                            }
+                                                        )
+                                                    ]),
+                                                    id='scatter-effect-alert',
+                                                    is_open=True,
+                                                    dismissable=False,
+                                                    style={'marginTop': '10px',
+                                                           'boxShadow': '0 4px 6px rgba(0, 0, 0, 0.1)'}
+                                                ),
+                                                dbc.Alert(
+                                                    html.Div([
+                                                        html.H4('3D Plot',
+                                                                style={'color': '#003f5c', 'marginLeft': '40px',
+                                                                       'textAlign': 'left', 'fontSize': '24px',
+                                                                       'fontWeight': 'lighter',
+                                                                       'display': 'inline-block', 'width': '45%'}),
+                                                        html.Button(
+                                                            '×', id='3d-plot-effect-alert', n_clicks=0,
+                                                            style={
+                                                                'background': 'none',
+                                                                'border': 'none',
+                                                                'color': 'black',
+                                                                'fontSize': '28px',
+                                                                'cursor': 'pointer',
+                                                                'float': 'right',
+                                                                'marginTop': '-10px',
+                                                                'color': '#003f5c'
+                                                            }
+                                                        )
+                                                    ]),
+                                                    id='3d-effect-alert',
+                                                    is_open=True,
+                                                    dismissable=False,
+                                                    style={'marginTop': '10px',
+                                                           'boxShadow': '0 4px 6px rgba(0, 0, 0, 0.1)'}
+                                                ),
+                                                html.Br(),
+                                                html.Br(),
+                                                html.Div([
+                                                    html.H4('Select intensity:', style={
+                                                        'textAlign': 'left',
+                                                        'fontSize': '28px',
+                                                        'marginBottom': '10px',
+                                                        'color': '#003f5c',
+                                                        "font-weight": "100",
+                                                        'opacity': 0.5,
+                                                        # Make text
+                                                        # semi-transparent to
+                                                        # indicate it's not
+                                                        # clickable
+                                                    }),
+                                                    dcc.Dropdown(
+                                                        id='data-analysis-options-dropdown',
+                                                        options=[{'label': option, 'value': option} for option in
+                                                                 ['GroupA_Detector1', 'GroupA_Detector2',
+                                                                  'GroupB_Detector1', 'GroupB_Detector2']],
+                                                        multi=False,
+                                                        value=[],
+                                                        style={
+                                                            'borderColor': 'transparent',  # Make the border transparent
+                                                            'backgroundColor': 'transparent',
+                                                            # Make background
+                                                            # transparent
+                                                            'fontSize': '24px',
+                                                            'cursor': 'not-allowed',  # Set cursor to not-allowed
+                                                            'opacity': 0.5
+                                                            # Make dropdown
+                                                            # semi-transparent
+                                                            # to indicate it's
+                                                            # not clickable
+                                                        }
+                                                    ),
+                                                ]),
+                                                html.Div(
+                                                    style={
+                                                        'display': 'flex',
+                                                        'alignItems': 'center',
+                                                        'justifyContent': 'space-between',
+                                                        'opacity': 0.5,  # Make the button's div semi-transparent
+                                                    },
+                                                    children=[
+                                                        html.Button(
+                                                            'Perform Data Analysis',
+                                                            id='data-analysis-button',
+                                                            n_clicks=0,
+                                                            style={
+                                                                'padding': '10px',
+                                                                'width': '100%',
+                                                                'margin': '10px 0',
+                                                                'fontSize': '20px',
+                                                                'backgroundColor': 'transparent',
+                                                                # Make button
+                                                                # background
+                                                                # transparent
+                                                                'border': 'none',
+                                                                # Remove border
+                                                                # to make it
+                                                                # look inactive
+                                                                'cursor': 'not-allowed',  # Set cursor to not-allowed
+                                                                'opacity': 0.5  # Make button semi-transparent
+                                                            }
+                                                        ),
+                                                    ]
+                                                ),
                     ]),
                 ]),
                 dcc.Tab(label='Concentrations', children=[
         html.Div([
             html.H3('Concentrations', style={
-                'background': '#ed6a28',
+                'background': '#003f5c',
                 'padding': '12px',
                 'textAlign': 'center',
                 'color': '#ECF0F1',
@@ -1240,7 +1684,7 @@ html.Br(),
         # Right side (3/4th width for Plot Section)
         html.Div([
             html.H3('Plot Section', style={
-                'background': '#ed6a28',
+                'background': '#003f5c',
                 'padding': '12px',
                 'textAlign': 'center',
                 'color': '#ECF0F1',
@@ -1313,7 +1757,7 @@ def save_uploaded_file(filename, contents):
     try:
         decoded_str = decoded.decode('utf-8')
     except UnicodeDecodeError:
-        return "Error: File is not UTF-8 encoded.", None
+        return "Error: File is not UTF-8 encoded. Upload data in CSV format", None
 
     # Save to file
     file_path = os.path.join(UPLOAD_FOLDER, filename)
@@ -1376,12 +1820,10 @@ def parse_time(time_str):
     except Exception as e:
         print(f"❌ Failed to parse time: {time_str} | Error: {e}")
         return None
-
-
 @app.callback(
     Output('resample-status', 'children'),
     Output('resampled-data', 'data'),
-    Output('resampling-method', 'data'),  # New output
+    Output('resampling-method', 'data'),
     Input('resample-option', 'value'),
     State('uploaded-data', 'data'),
     State('upload-data', 'filename'),
@@ -1389,67 +1831,75 @@ def parse_time(time_str):
 )
 def on_resample_option_selected(option, uploaded_data_json, original_filename):
     if uploaded_data_json is None or original_filename is None:
-        return "No uploaded data available.", None, None
+        return "⚠️ No uploaded data available.", None, "No resampling"
 
     df = pd.read_json(uploaded_data_json, orient='split')
-    df['total_seconds'] = df['Time'].apply(parse_time)
-    if df['total_seconds'].isnull().any():
-        return "Time format error in one or more rows.", None, None
 
+    # Step 1: Parse Time column to total seconds
+    try:
+        df['total_seconds'] = df['Time'].apply(parse_time)
+    except Exception:
+        return "⚠️ Time format parsing error.", None, "No resampling"
+
+    if df['total_seconds'].isnull().any():
+        return "⚠️ Time format error in one or more rows.", None, "No resampling"
+
+    # Step 2: Group by integer seconds
     grouped = df.groupby('total_seconds')
+
     if option == 'average':
         resampled_df = grouped.mean(numeric_only=True)
-        resample_method_str = "Resampling: Averaging 1Hz"
+        resample_method_str = "1Hz Average"
     elif option == 'accumulation':
         resampled_df = grouped.sum(numeric_only=True)
-        resample_method_str = "Resampling: Accumulation 1Hz"
+        resample_method_str = "1Hz Accumulation"
     else:
-        return f"Unknown resampling option: {option}", None, None
+        return f"⚠️ Unknown resampling option: {option}", None, "No resampling"
 
-    # Reduce Time column to one value per second
+    # Step 3: Reduce original time column to one row per second (HH:MM:SS)
     def reduce_to_one_per_second(time_series):
         seen_seconds = set()
-        result = []
+        reduced = []
         for t in time_series:
             try:
-                minutes, rest = t.split(':')
-                seconds, millis = rest.split('.')
-                full_seconds = f"{minutes}:{seconds}"
-                if full_seconds not in seen_seconds:
-                    seen_seconds.add(full_seconds)
-                    result.append(t)
+                time_parts = t.split(':')
+                minutes = time_parts[1]
+                seconds = time_parts[2].split('.')[0]
+                reduced_time = f"{time_parts[0]}:{minutes}:{seconds}"
+                if reduced_time not in seen_seconds:
+                    seen_seconds.add(reduced_time)
+                    reduced.append(t)
             except:
                 continue
-        return result
+        return reduced
 
     reduced_time_list = reduce_to_one_per_second(df['Time'].tolist())
 
-    # Add reduced time as first column
+    # Step 4: Insert Time column
     if len(reduced_time_list) == len(resampled_df):
         resampled_df.insert(0, 'Time', reduced_time_list)
     else:
-        fallback_times = resampled_df.index.map(lambda x: f"{int(x // 60)}:{int(x % 60):02}")
+        fallback_times = resampled_df.index.map(lambda x: f"{int(x // 60):02}:{int(x % 60):02}:00.000")
         resampled_df.insert(0, 'Time', fallback_times)
 
-    # Drop unwanted columns
+    # Step 5: Drop irrelevant columns
     for col in ['System Time (s)', 'Sample Time (s)']:
         if col in resampled_df.columns:
             resampled_df.drop(columns=col, inplace=True)
 
-    # Save to disk
+    # Step 6: Save resampled data to disk
     RESAMPLED_FOLDER = 'src/resampled_data'
+    os.makedirs(RESAMPLED_FOLDER, exist_ok=True)
     clear_folder(RESAMPLED_FOLDER)
+
     base_name = os.path.splitext(original_filename)[0]
     resampled_filename = f"{base_name}_resampled_data.csv"
     resampled_path = os.path.join(RESAMPLED_FOLDER, resampled_filename)
     resampled_df.to_csv(resampled_path, index=False)
 
-    # Convert to JSON
+    # Step 7: Return updated info
     resampled_json = resampled_df.to_json(date_format='iso', orient='split')
-    return f"Resampled using: {option}", resampled_json, resample_method_str
-
-
-from dash import no_update
+    return f"✅ Resampled using: {resample_method_str}", resampled_json, resample_method_str
 
 @app.callback(
     Output("download-file-snirf", "data"),
@@ -1488,6 +1938,9 @@ GROUPS = {
     'GroupB_Detector3': ['LED_B_782_DET3', 'LED_B_801_DET3', 'LED_B_808_DET3', 'LED_B_828_DET3', 'LED_B_848_DET3', 'LED_B_887_DET3', 'LED_B_DARK_DET3'],
 }
 
+import numpy as np
+import plotly.graph_objs as go
+
 def create_intensity_figure(df, spectra_list, title, time_unit):
     traces = []
     for col in spectra_list:
@@ -1503,10 +1956,17 @@ def create_intensity_figure(df, spectra_list, title, time_unit):
         xaxis={'title': f'Time ({time_unit})', 'title_font': {'size': 18}, 'tickfont': {'size': 14}},
         yaxis={'title': 'Voltage (V)', 'title_font': {'size': 18}, 'tickfont': {'size': 14}},
         legend={'font': {'size': 14}},
-        height=1000
+        height=1050,
+        width=2140,
+        autosize=False  # Disable auto-resizing to enforce fixed height
     )
 
-    return go.Figure(data=traces, layout=layout)
+    fig = go.Figure(data=traces, layout=layout)
+    fig.update_layout(
+        margin=dict(l=60, r=40, t=80, b=60),  # Optional: adjust margins
+    )
+    return fig
+
 
 @app.callback(
     Output('intensity-time-plot', 'children'),
@@ -1634,14 +2094,6 @@ def update_data_quality_tab(n_clicks, resampled_json, uploaded_json, selected_co
 
 #============================DATA CLEANING================================================================================================================
 
-import os
-import pandas as pd
-import numpy as np
-from scipy.signal import butter, filtfilt, medfilt
-import plotly.graph_objects as go
-import dash
-from dash import dcc, html, Input, Output, State, callback_context
-
 @app.callback(
     Output('data-clean-plot', 'children'),
     Output('cleaned-data', 'data'),
@@ -1694,7 +2146,6 @@ def data_cleaning(apply_clicks, view_clicks, resampled_json, uploaded_json, uplo
     if df.empty:
         return html.Div("Loaded data is empty."), dash.no_update
 
-    # Get original time column from appropriate source
     original_time_df = pd.read_json(resampled_json if resampled_json else uploaded_json, orient='split')
     time_axis = original_time_df['Time'] if 'Time' in original_time_df.columns else original_time_df.index
 
@@ -1702,7 +2153,6 @@ def data_cleaning(apply_clicks, view_clicks, resampled_json, uploaded_json, uplo
     original_signal_df = df[signal_cols].copy()
     cleaned_df = original_signal_df.copy()
 
-    # Step 1: Subtract Dark
     if subtract_dark_option and 'subtract-dark' in subtract_dark_option:
         dark_mapping = {
             f"LED_A_{wl}_DET{i}": f"LED_A_DARK_DET{i}"
@@ -1719,7 +2169,6 @@ def data_cleaning(apply_clicks, view_clicks, resampled_json, uploaded_json, uplo
 
     numeric_cols = cleaned_df.select_dtypes(include='number').columns
 
-    # Step 2: High-pass filter
     if highpass_option and 'highpass' in highpass_option:
         if highpass_cutoff <= 0 or highpass_cutoff >= (highpass_sr / 2):
             return html.Div(f"Invalid high-pass cutoff. Must be between 0 and {highpass_sr / 2} Hz."), dash.no_update
@@ -1727,7 +2176,6 @@ def data_cleaning(apply_clicks, view_clicks, resampled_json, uploaded_json, uplo
         for col in numeric_cols:
             cleaned_df[col] = filtfilt(b, a, cleaned_df[col].values)
 
-    # Step 3: Low-pass filter
     if lowpass_option and 'lowpass' in lowpass_option:
         if lowpass_cutoff <= 0 or lowpass_cutoff >= (lowpass_sr / 2):
             return html.Div(f"Invalid low-pass cutoff. Must be between 0 and {lowpass_sr / 2} Hz."), dash.no_update
@@ -1735,7 +2183,6 @@ def data_cleaning(apply_clicks, view_clicks, resampled_json, uploaded_json, uplo
         for col in numeric_cols:
             cleaned_df[col] = filtfilt(b, a, cleaned_df[col].values)
 
-    # Step 4: Band-pass filter
     if bandpass_option and 'bandpass' in bandpass_option:
         if bandpass_low <= 0 or bandpass_high <= bandpass_low or bandpass_high >= (bandpass_sr / 2):
             return html.Div(f"Invalid band-pass range. Must be: 0 < low < high < {bandpass_sr / 2} Hz."), dash.no_update
@@ -1743,22 +2190,19 @@ def data_cleaning(apply_clicks, view_clicks, resampled_json, uploaded_json, uplo
         for col in numeric_cols:
             cleaned_df[col] = filtfilt(b, a, cleaned_df[col].values)
 
-    # Step 5: Median filter
     if median_option and 'median' in median_option:
         for col in numeric_cols:
             cleaned_df[col] = medfilt(cleaned_df[col].values, kernel_size=median_size)
 
-    # Add back Time column for further use
     cleaned_df.insert(0, 'Time', time_axis)
 
-    # Plotting
     grouped_columns = {
-        "Group A Detector 1": ['LED_A_782_DET1', 'LED_A_801_DET1', 'LED_A_808_DET1', 'LED_A_828_DET1', 'LED_A_848_DET1', 'LED_A_887_DET1'],
-        "Group A Detector 2": ['LED_A_782_DET2', 'LED_A_801_DET2', 'LED_A_808_DET2', 'LED_A_828_DET2', 'LED_A_848_DET2', 'LED_A_887_DET2'],
-        "Group A Detector 3": ['LED_A_782_DET3', 'LED_A_801_DET3', 'LED_A_808_DET3', 'LED_A_828_DET3', 'LED_A_848_DET3', 'LED_A_887_DET3'],
-        "Group B Detector 1": ['LED_B_782_DET1', 'LED_B_801_DET1', 'LED_B_808_DET1', 'LED_B_828_DET1', 'LED_B_848_DET1', 'LED_B_887_DET1'],
-        "Group B Detector 2": ['LED_B_782_DET2', 'LED_B_801_DET2', 'LED_B_808_DET2', 'LED_B_828_DET2', 'LED_B_848_DET2', 'LED_B_887_DET2'],
-        "Group B Detector 3": ['LED_B_782_DET3', 'LED_B_801_DET3', 'LED_B_808_DET3', 'LED_B_828_DET3', 'LED_B_848_DET3', 'LED_B_887_DET3'],
+        "Group A Detector 1": [f"LED_A_{wl}_DET1" for wl in ['782', '801', '808', '828', '848', '887']],
+        "Group A Detector 2": [f"LED_A_{wl}_DET2" for wl in ['782', '801', '808', '828', '848', '887']],
+        "Group A Detector 3": [f"LED_A_{wl}_DET3" for wl in ['782', '801', '808', '828', '848', '887']],
+        "Group B Detector 1": [f"LED_B_{wl}_DET1" for wl in ['782', '801', '808', '828', '848', '887']],
+        "Group B Detector 2": [f"LED_B_{wl}_DET2" for wl in ['782', '801', '808', '828', '848', '887']],
+        "Group B Detector 3": [f"LED_B_{wl}_DET3" for wl in ['782', '801', '808', '828', '848', '887']]
     }
 
     active_groups = {
@@ -1800,7 +2244,6 @@ def data_cleaning(apply_clicks, view_clicks, resampled_json, uploaded_json, uplo
                 *group_figs
             ]))
 
-    # Save to CSV
     save_dir = "src/cleaned_data/data_clean"
     os.makedirs(save_dir, exist_ok=True)
 
@@ -1832,21 +2275,27 @@ def data_cleaning(apply_clicks, view_clicks, resampled_json, uploaded_json, uplo
     State('cleaned-data', 'data'),
     State('resampled-data', 'data'),
     State('uploaded-data', 'data'),
+    State('resampling-method', 'data'),  # <-- NEW
     State('upload-data', 'filename'),
     prevent_initial_call=True
 )
-def on_calculate_concentrations(n_clicks, cleaned_json, resampled_json, uploaded_json, filename):
+def on_calculate_concentrations(n_clicks, cleaned_json, resampled_json, uploaded_json, resampling_method, filename):
     if not n_clicks:
         return dash.no_update, dash.no_update
 
     # Priority: Cleaned > Resampled > Raw
     df = None
+    resample_note = resampling_method or "No resampling"
+
     if cleaned_json:
         df = pd.read_json(cleaned_json, orient='split')
+        resample_note += ""
     elif resampled_json:
         df = pd.read_json(resampled_json, orient='split')
+        resample_note += ""
     elif uploaded_json:
         df = pd.read_json(uploaded_json, orient='split')
+        resample_note = "No Resampling"
 
     if df is None or df.empty:
         return html.Div("❌ No valid data to calculate concentrations."), dash.no_update
@@ -1855,43 +2304,26 @@ def on_calculate_concentrations(n_clicks, cleaned_json, resampled_json, uploaded
     selected_cols = [col for col in df.columns if col.startswith("LED_") or col == "Time"]
     df_selected = df[selected_cols]
 
-    # Run UCLN
+    # Run calculations
     conc_a_1_df, conc_a_2_df, conc_a_3_df, \
     conc_b_1_df, conc_b_2_df, conc_b_3_df, \
     atten_a_1, atten_a_2, atten_a_3, \
     atten_b_1, atten_b_2, atten_b_3, wavelengths = UCLN(df_selected)
 
-    # Run SRS and Dual Slope
     sto2_result = SRS(df_selected)
-
     df_sto2_A = pd.DataFrame({"Sto2_A": sto2_result["StO2_A"]})
     df_sto2_B = pd.DataFrame({"Sto2_B": sto2_result["StO2_B"]})
 
-    
     ds_sto2_result = dual_slope_wavelength(df_selected)
-
     df_sto2_dual = pd.DataFrame({"dual_slope_sto2": ds_sto2_result["ds_sto2_AB"]})
 
-    # Group all results
-    sheet_data = {
-        "Concentration LED A-DET 1": conc_a_1_df,
-        "Concentration LED A-DET 2": conc_a_2_df,
-        "Concentration LED A-DET 3": conc_a_3_df,
-        "Concentration LED B-DET 1": conc_b_1_df,
-        "Concentration LED B-DET 2": conc_b_2_df,
-        "Concentration LED B-DET 3": conc_b_3_df,
-        "Tissue oxygen saturation(StO2) LED A": df_sto2_A,
-        "Tissue oxygen saturation(StO2) LED B": df_sto2_B,
-        "Tissue oxygen saturation(StO2) Dual Slope": df_sto2_dual
-    }
-
-    # === Fix path ===
+    # Generate Excel
     output_dir = os.path.join(os.path.dirname(__file__), "src", "concentrations_ucln_srs", "concentration_data")
     os.makedirs(output_dir, exist_ok=True)
 
     excel_path = generate_concentration_excel(
         filename=filename,
-        resample_note="NA",  # Or dynamically pass resampling info
+        resample_note=resample_note,
         df=df,
         conc_a_1_df=conc_a_1_df,
         conc_a_2_df=conc_a_2_df,
@@ -1905,9 +2337,20 @@ def on_calculate_concentrations(n_clicks, cleaned_json, resampled_json, uploaded
         output_dir=output_dir
     )
 
-
-    # Prepare plots with improved tab labels
+    # Prepare plots
     tabs = []
+    sheet_data = {
+        "Concentration LED A-DET 1": conc_a_1_df,
+        "Concentration LED A-DET 2": conc_a_2_df,
+        "Concentration LED A-DET 3": conc_a_3_df,
+        "Concentration LED B-DET 1": conc_b_1_df,
+        "Concentration LED B-DET 2": conc_b_2_df,
+        "Concentration LED B-DET 3": conc_b_3_df,
+        "Tissue oxygen saturation(StO2) LED A": df_sto2_A,
+        "Tissue oxygen saturation(StO2) LED B": df_sto2_B,
+        "Tissue oxygen saturation(StO2) Dual Slope": df_sto2_dual
+    }
+
     for name, df_plot in sheet_data.items():
         if not df_plot.empty:
             fig = px.line(df_plot, title=name)
@@ -1915,20 +2358,12 @@ def on_calculate_concentrations(n_clicks, cleaned_json, resampled_json, uploaded
                 xaxis_title="Time",
                 yaxis_title="ΔC (mM)" if "Concentration" in name else "StO2 (%)"
             )
-
-            # Generate a shorter tab label
-            if "Tissue oxygen saturation" in name:
-                if "LED A" in name:
-                    tab_label = "StO₂ - LED A"
-                elif "LED B" in name:
-                    tab_label = "StO₂ - LED B"
-                elif "Dual Slope" in name:
-                    tab_label = "StO₂ - Dual"
-                else:
-                    tab_label = "StO₂"
-            else:
-                tab_label = name[:31]
-
+            tab_label = (
+                "StO₂ - LED A" if "LED A" in name else
+                "StO₂ - LED B" if "LED B" in name else
+                "StO₂ - Dual" if "Dual Slope" in name else
+                name[:31]
+            )
             tabs.append(dcc.Tab(label=tab_label, children=[
                 html.Div([
                     html.H5(name),
@@ -1936,24 +2371,15 @@ def on_calculate_concentrations(n_clicks, cleaned_json, resampled_json, uploaded
                 ])
             ]))
 
-    tab_content = dcc.Tabs(children=tabs)
-
-    # Save preview data
-    preview_data = {name: df.head().to_dict('records') for name, df in sheet_data.items()}
-
-    return tab_content, {
-    "preview": preview_data,
-    "excel_path": excel_path
-}
+    return dcc.Tabs(children=tabs), {
+        "preview": {name: df.head().to_dict('records') for name, df in sheet_data.items()},
+        "excel_path": excel_path
+    }
 
 
-import io
 import os
-import pandas as pd
 import numpy as np
-from dash import dcc
-from openpyxl.utils.dataframe import dataframe_to_rows
-import openpyxl
+import pandas as pd
 
 def generate_concentration_excel(
     filename, resample_note, df,
@@ -1962,56 +2388,74 @@ def generate_concentration_excel(
     df_sto2_A, df_sto2_B, df_sto2_dual,
     output_dir
 ):
+    # --- 1. Set default resampling note ---
+    if not resample_note:
+        resample_note = "No Resampling"
+
+    # --- 2. Prepare file name & clean output folder ---
     base_filename = filename.split('.')[0] if filename else "output"
     output_path = os.path.join(output_dir, f"{base_filename}_concentrations.xlsx")
 
-    # Mapping for SNR
+    os.makedirs(output_dir, exist_ok=True)
+    for file in os.listdir(output_dir):
+        file_path = os.path.join(output_dir, file)
+        if os.path.isfile(file_path) and file.endswith(".xlsx"):
+            os.remove(file_path)
+
+    # --- 3. Build dark signal mapping ---
     signal_dark_dictionary = {
         f'LED_{side}_{wl}_DET{d}': f'LED_{side}_DARK_DET{d}'
-        for side in ['A', 'B'] for wl in ['782', '801', '808', '828', '848', '887'] for d in [1, 2, 3]
+        for side in ['A', 'B']
+        for wl in ['782', '801', '808', '828', '848', '887']
+        for d in [1, 2, 3]
     }
 
+    # --- 4. Helper functions ---
     def calculate_snr(signal_data, dark_data):
         signal = np.mean(signal_data)
         dark_mean = np.mean(dark_data)
-        return (signal - dark_mean) / dark_mean if dark_mean != 0 else 0
+        return (signal - dark_mean) / dark_mean if dark_mean != 0 else np.nan
 
     def calculate_group_snr(group):
-        values = []
-        for signal_col in group:
-            dark_col = signal_dark_dictionary.get(signal_col)
-            if signal_col in df.columns and dark_col in df.columns:
-                values.append(calculate_snr(df[signal_col], df[dark_col]))
-        return np.mean(values) if values else 0
+        snr_vals = []
+        for col in group:
+            dark_col = signal_dark_dictionary.get(col)
+            if col in df.columns and dark_col in df.columns:
+                snr_vals.append(calculate_snr(df[col], df[dark_col]))
+        return np.nanmean(snr_vals) if snr_vals else np.nan
 
     def calculate_nep(dark_cols):
-        data = [df[col].dropna().values for col in dark_cols if col in df.columns]
-        if not data:
-            return 0
-        return np.std(np.concatenate(data))
+        dark_vals = [df[col].dropna().values for col in dark_cols if col in df.columns]
+        return np.std(np.concatenate(dark_vals)) if dark_vals else np.nan
 
-    snr_short = calculate_group_snr([
-        'LED_A_782_DET1', 'LED_A_801_DET1', 'LED_A_808_DET1',
-        'LED_B_887_DET3', 'LED_B_848_DET3', 'LED_B_828_DET3'
-    ])
-    snr_long = calculate_group_snr([
-        'LED_A_782_DET3', 'LED_A_801_DET3', 'LED_A_808_DET3',
-        'LED_B_887_DET1', 'LED_B_848_DET1', 'LED_B_828_DET1'
-    ])
+    # --- 5. Define detector groups ---
+    group_1 = ['LED_A_782_DET1', 'LED_A_801_DET1', 'LED_A_808_DET1', 'LED_A_828_DET1', 'LED_A_848_DET1', 'LED_A_887_DET1',
+               'LED_B_782_DET3', 'LED_B_801_DET3', 'LED_B_808_DET3', 'LED_B_828_DET3', 'LED_B_848_DET3', 'LED_B_887_DET3']
+    group_2 = ['LED_A_782_DET2', 'LED_A_801_DET2', 'LED_A_808_DET2', 'LED_A_828_DET2', 'LED_A_848_DET2', 'LED_A_887_DET2',
+               'LED_B_782_DET2', 'LED_B_801_DET2', 'LED_B_808_DET2', 'LED_B_828_DET2', 'LED_B_848_DET2', 'LED_B_887_DET2']
+    group_3 = ['LED_A_782_DET3', 'LED_A_801_DET3', 'LED_A_808_DET3', 'LED_A_828_DET3', 'LED_A_848_DET3', 'LED_A_887_DET3',
+               'LED_B_782_DET1', 'LED_B_801_DET1', 'LED_B_808_DET1', 'LED_B_828_DET1', 'LED_B_848_DET1', 'LED_B_887_DET1']
+
+    snr_1 = calculate_group_snr(group_1)
+    snr_2 = calculate_group_snr(group_2)
+    snr_3 = calculate_group_snr(group_3)
+
     nep_1 = calculate_nep(['LED_A_DARK_DET1', 'LED_B_DARK_DET1'])
     nep_2 = calculate_nep(['LED_A_DARK_DET2', 'LED_B_DARK_DET2'])
     nep_3 = calculate_nep(['LED_A_DARK_DET3', 'LED_B_DARK_DET3'])
 
+    # --- 6. Create summary DataFrame ---
     summary_df = pd.DataFrame([
-        ["Resampling", resample_note],
+        ["Resampling Method", resample_note],
         ["NEP Detector 1 (mV)", round(nep_1, 4)],
         ["NEP Detector 2 (mV)", round(nep_2, 4)],
         ["NEP Detector 3 (mV)", round(nep_3, 4)],
-        ["SNR Short Channel Average", round(snr_short, 4)],
-        ["SNR Long Channel Average", round(snr_long, 4)],
+        ["SNR Short Channel Average", round(snr_1, 4)],
+        ["SNR Mid Channel Average", round(snr_2, 4)],
+        ["SNR Long Channel Average", round(snr_3, 4)],
     ], columns=["Metric", "Value"])
 
-    # Rename columns
+    # --- 7. Rename concentration & StO₂ columns ---
     conc_a_1_df.columns = ["LED-A_DET-1_HHb", "LED-A_DET-1_HbO2", "LED-A_DET-1_oxCCO"]
     conc_a_2_df.columns = ["LED-A_DET-2_HHb", "LED-A_DET-2_HbO2", "LED-A_DET-2_oxCCO"]
     conc_a_3_df.columns = ["LED-A_DET-3_HHb", "LED-A_DET-3_HbO2", "LED-A_DET-3_oxCCO"]
@@ -2022,18 +2466,21 @@ def generate_concentration_excel(
     df_sto2_B.columns = ["STO2_B"]
     df_sto2_dual.columns = ["STO2_AB"]
 
+    # --- 8. Combine all data ---
     result_df = pd.concat([
         conc_a_1_df, conc_a_2_df, conc_a_3_df,
         conc_b_1_df, conc_b_2_df, conc_b_3_df,
         df_sto2_A, df_sto2_B, df_sto2_dual
     ], axis=1)
 
-    result_df.insert(0, "Time", df["Time"].values)
+    # Add Date and Time
+    result_df.insert(0, "Time", df["Time"].values if "Time" in df.columns else np.nan)
     result_df.insert(0, "Date", pd.Timestamp.now().strftime("%m/%d/%Y"))
 
+    # --- 9. Write to Excel ---
     with pd.ExcelWriter(output_path, engine='xlsxwriter') as writer:
-        summary_df.to_excel(writer, index=False, sheet_name='concentration', startrow=0, header=True)
-        result_df.to_excel(writer, index=False, sheet_name='concentration', startrow=len(summary_df) + 2)
+        summary_df.to_excel(writer, sheet_name='concentration', index=False, startrow=0)
+        result_df.to_excel(writer, sheet_name='concentration', index=False, startrow=len(summary_df) + 2)
 
     return output_path
 
@@ -2054,5 +2501,74 @@ def download_concentration_excel(n_clicks, conc_data):
 
     return dcc.send_file(excel_path)
 
+#=======================Upload to cloud========================================
+# Modal visibility toggle
+@callback(
+    Output('upload-modal', 'style'),
+    Input('upload-cloud-button', 'n_clicks'),
+    Input('close-modal', 'n_clicks'),
+    State('upload-modal', 'style'),
+    prevent_initial_call=True
+)
+def toggle_modal(open_clicks, close_clicks, current_style):
+    if ctx.triggered_id == 'upload-cloud-button':
+        return {**current_style, 'display': 'flex'}
+    elif ctx.triggered_id == 'close-modal':
+        return {**current_style, 'display': 'none'}
+    return current_style
+
+# Show selected file names
+@callback(Output('filename-raw', 'children'), Input('upload-raw', 'filename'))
+def show_raw_filename(filename):
+    return f"File selected: {filename}" if filename else ""
+
+@callback(Output('filename-concentration', 'children'), Input('upload-concentration', 'filename'))
+def show_conc_filename(filename):
+    return f"File selected: {filename}" if filename else ""
+
+@callback(Output('filename-ctg', 'children'), Input('upload-ctg', 'filename'))
+def show_ctg_filename(filename):
+    return f"File selected: {filename}" if filename else ""
+
+# Upload to S3 and show alerts
+@callback(
+    Output('upload-alerts', 'children'),
+    Input('submit-modal', 'n_clicks'),
+    State('upload-raw', 'contents'), State('upload-raw', 'filename'),
+    State('upload-concentration', 'contents'), State('upload-concentration', 'filename'),
+    State('upload-ctg', 'contents'), State('upload-ctg', 'filename'),
+    prevent_initial_call=True
+)
+def upload_files_to_s3(n_clicks, raw_content, raw_filename, conc_content, conc_filename, ctg_content, ctg_filename):
+    files = [
+        ('upload-raw', raw_content, raw_filename),
+        ('upload-concentration', conc_content, conc_filename),
+        ('upload-ctg', ctg_content, ctg_filename)
+    ]
+    alerts = []
+
+    for input_id, content, filename in files:
+        if content and filename:
+            bucket = bucket_map[input_id]
+            try:
+                s3.head_object(Bucket=bucket, Key=filename)
+                alerts.append(dbc.Alert(f"❌ File '{filename}' already exists in {bucket}", color='danger'))
+                continue
+            except s3.exceptions.ClientError as e:
+                if e.response['Error']['Code'] != '404':
+                    alerts.append(dbc.Alert(f"❌ Error checking {filename}: {str(e)}", color='danger'))
+                    continue
+
+            try:
+                content_type, content_string = content.split(',')
+                decoded = base64.b64decode(content_string)
+                s3.upload_fileobj(io.BytesIO(decoded), bucket, filename)
+                alerts.append(dbc.Alert(f"✅ Uploaded '{filename}' to {bucket}", color='success'))
+            except Exception as e:
+                alerts.append(dbc.Alert(f"❌ Failed to upload {filename}: {str(e)}", color='danger'))
+
+    return alerts
+
+
 if __name__ == '__main__':
-    app.run(debug=True, port=8040) 
+    app.run(debug=False, port=8052)

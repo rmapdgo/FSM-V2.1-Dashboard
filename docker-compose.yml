@@ -1,6 +1,28 @@
 services:
-  newconcentrations:
-    image: newconcentrations
+  dash-app:
     build:
       context: .
-      dockerfile: ./Dockerfile
+      dockerfile: Dockerfile
+    container_name: dash-app
+    restart: on-failure
+    ports:
+      - "8050:8050"  # Expose the Dash app port (for internal communication)
+
+
+  caddy:
+    image: caddy:2
+    container_name: caddy
+    restart: always
+    ports:
+      - "80:80"  # Expose Caddy on port 80
+      - "443:443"  # Expose Caddy on port 80
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile  # Mount the Caddyfile for configuration
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - dash-app
+
+volumes:
+  caddy_data:
+  caddy_config:
